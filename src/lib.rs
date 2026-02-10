@@ -11,8 +11,10 @@ use clap::error::ErrorKind;
 use i18n_embed::DefaultLocalizer;
 use i18n_embed::DesktopLanguageRequester;
 use i18n_embed::Localizer;
+use unic_langid::LanguageIdentifier;
 
 use crate::lang::CLAP_I18N_LANGUAGE_LOADER;
+use crate::lang::{get_loader_for_languages, take_prerendered_error, with_scoped_loader};
 pub use crate::lang::ClapI18nLocalizations;
 use crate::lang::fl;
 
@@ -26,12 +28,13 @@ pub use clap_i18n_derive::clap_i18n;
 #[doc(hidden)]
 pub mod __private {
     pub use crate::lang::get_translation;
+    pub use crate::lang::set_prerendered_error;
 }
 
 const TAB: &str = "  ";
 
 pub fn init_clap_rich_formatter_localizer() {
-    let localizer = DefaultLocalizer::new(&*CLAP_I18N_LANGUAGE_LOADER, &ClapI18nLocalizations);
+    let localizer = DefaultLocalizer::new(&**CLAP_I18N_LANGUAGE_LOADER, &ClapI18nLocalizations);
     let requested_languages = DesktopLanguageRequester::requested_languages();
 
     if let Err(error) = localizer.select(&requested_languages) {
@@ -42,6 +45,84 @@ pub fn init_clap_rich_formatter_localizer() {
     // This is a temporary workaround for https://github.com/microsoft/terminal/issues/16574
     // TODO: this might break BiDi text, though we don't support any writing system depends on that.
     CLAP_I18N_LANGUAGE_LOADER.set_use_isolating(false);
+}
+
+/// Initialize localizer with an explicit language list.
+///
+/// When `languages` is empty, it falls back to system languages.
+pub fn init_clap_rich_formatter_localizer_with_languages<I>(languages: I)
+where
+    I: IntoIterator<Item = LanguageIdentifier>,
+{
+    let languages: Vec<LanguageIdentifier> = languages.into_iter().collect();
+    if languages.is_empty() {
+        init_clap_rich_formatter_localizer();
+        return;
+    }
+
+    let localizer = DefaultLocalizer::new(&**CLAP_I18N_LANGUAGE_LOADER, &ClapI18nLocalizations);
+    if let Err(error) = localizer.select(&languages) {
+        eprintln!("Error while loading languages for library_fluent {error}");
+    }
+
+    // Windows Terminal doesn't support bidirectional (BiDi) text, and renders the isolate characters incorrectly.
+    // This is a temporary workaround for https://github.com/microsoft/terminal/issues/16574
+    // TODO: this might break BiDi text, though we don't support any writing system depends on that.
+    CLAP_I18N_LANGUAGE_LOADER.set_use_isolating(false);
+}
+
+/// Initialize localizer with language tags like "zh-CN" or "en-US".
+///
+/// Invalid tags are ignored; when none are valid, it falls back to system languages.
+pub fn init_clap_rich_formatter_localizer_with_language_tags<I, S>(language_tags: I)
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut languages = Vec::new();
+    for tag in language_tags {
+        if let Ok(lang) = tag.as_ref().parse::<LanguageIdentifier>() {
+            languages.push(lang);
+        }
+    }
+
+    init_clap_rich_formatter_localizer_with_languages(languages);
+}
+
+/// Run `f` with a request-scoped localizer using language tag like "zh-CN" or "en-US".
+///
+/// This does NOT modify the global loader and is safe for concurrent requests.
+/// When `language_tag` is None, defaults to Chinese (zh-CN).
+///
+/// # Example
+/// ```ignore
+/// // Use English
+/// with_clap_rich_formatter_localizer_for_language_tag(Some("en-US"), || {
+///     // code here runs with English
+/// });
+/// // Use default (Chinese)
+/// with_clap_rich_formatter_localizer_for_language_tag(None, || {
+///     // code here runs with Chinese
+/// });
+/// ```
+pub fn with_clap_rich_formatter_localizer_for_language_tag<R>(
+    language_tag: Option<&str>,
+    f: impl FnOnce() -> R,
+) -> R {
+    let languages = if let Some(tag) = language_tag {
+        if let Ok(lang) = tag.parse::<LanguageIdentifier>() {
+            vec![lang]
+        } else {
+            // Default to Chinese if parse fails
+            vec!["zh-CN".parse().unwrap()]
+        }
+    } else {
+        // Default to Chinese
+        vec!["zh-CN".parse().unwrap()]
+    };
+
+    let loader = get_loader_for_languages(&languages);
+    with_scoped_loader(loader, f)
 }
 
 pub trait CommandI18nExt {
@@ -71,6 +152,11 @@ pub struct ClapI18nRichFormatter;
 
 impl ErrorFormatter for ClapI18nRichFormatter {
     fn format_error(error: &clap::error::Error<Self>) -> StyledStr {
+        // Check if there's a pre-rendered error message
+        if let Some(prerendered) = take_prerendered_error() {
+            return StyledStr::from(prerendered);
+        }
+
         use std::fmt::Write as _;
         let styles = &Styles::default();
         let valid = &styles.get_valid();
@@ -128,12 +214,12 @@ impl ErrorFormatter for ClapI18nRichFormatter {
             }
         }
 
-        let usage = error.get(ContextKind::Usage);
-        if let Some(ContextValue::StyledStr(usage)) = usage {
-            put_usage(&mut styled, usage);
-        }
+        // let usage = error.get(ContextKind::Usage);
+        // if let Some(ContextValue::StyledStr(usage)) = usage {
+        //     put_usage(&mut styled, usage);
+        // }
 
-        try_help(&mut styled, styles, Some("--help"));
+        // try_help(&mut styled, styles, Some("--help"));
 
         styled
     }
@@ -496,26 +582,26 @@ fn write_values_list(
     }
 }
 
-fn put_usage(styled: &mut StyledStr, usage: &StyledStr) {
-    styled.push_str("\n\n");
-    styled.push_str(
-        &usage
-            .ansi()
-            .to_string()
-            .replacen("Usage:", &fl!("clap-usage-heading"), 1),
-    );
-}
+// fn put_usage(styled: &mut StyledStr, usage: &StyledStr) {
+//     styled.push_str("\n\n");
+//     styled.push_str(
+//         &usage
+//             .ansi()
+//             .to_string()
+//             .replacen("Usage:", &fl!("clap-usage-heading"), 1),
+//     );
+// }
 
-fn try_help(styled: &mut StyledStr, styles: &Styles, help: Option<&str>) {
-    if let Some(help) = help {
-        use std::fmt::Write as _;
-        let literal = &styles.get_literal();
-        let help = format!("{literal}{help}{literal:#}");
-        let _ = write!(styled, "\n\n{}\n", fl!("clap-help-tips", help = help));
-    } else {
-        styled.push_str("\n");
-    }
-}
+// fn try_help(styled: &mut StyledStr, styles: &Styles, help: Option<&str>) {
+//     if let Some(help) = help {
+//         use std::fmt::Write as _;
+//         let literal = &styles.get_literal();
+//         let help = format!("{literal}{help}{literal:#}");
+//         let _ = write!(styled, "\n\n{}\n", fl!("clap-help-tips", help = help));
+//     } else {
+//         styled.push_str("\n");
+//     }
+// }
 
 fn did_you_mean(styled: &mut StyledStr, styles: &Styles, context: &str, possibles: &ContextValue) {
     use std::fmt::Write as _;

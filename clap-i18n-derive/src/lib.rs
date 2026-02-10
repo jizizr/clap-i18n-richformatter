@@ -140,14 +140,14 @@ pub fn clap_i18n(_attr: TokenStream, item: TokenStream) -> TokenStream {
                             .help(help_help)
                             .global(true)
                     )
-                    .arg(
-                        clap::Arg::new("version")
-                            .short('V')
-                            .long("version")
-                            .action(clap::ArgAction::Version)
-                            .help(version_help)
-                            .global(true)
-                    )
+                    // .arg(
+                    //     clap::Arg::new("version")
+                    //         .short('V')
+                    //         .long("version")
+                    //         .action(clap::ArgAction::Version)
+                    //         .help(version_help)
+                    //         .global(true)
+                    // )
             }
 
             /// Parse arguments with i18n-translated help, version, and error messages.
@@ -169,6 +169,103 @@ pub fn clap_i18n(_attr: TokenStream, item: TokenStream) -> TokenStream {
             /// Use this for simple CLI apps that should exit on parse errors.
             pub fn parse_i18n_or_exit() -> Self {
                 Self::parse_i18n().unwrap_or_else(|e| e.exit())
+            }
+
+            pub fn parse_i18n_from<I, T>(iter: I) -> Result<Self, clap::error::Error<clap_i18n_richformatter::ClapI18nRichFormatter>>
+            where
+                I: IntoIterator<Item = T>,
+                T: Into<std::ffi::OsString> + Clone,
+            {
+                use clap::FromArgMatches;
+                clap_i18n_richformatter::init_clap_rich_formatter_localizer();
+                Self::command_i18n()
+                    .try_get_matches_from(iter)
+                    .and_then(|mut matches| Self::from_arg_matches_mut(&mut matches))
+                    .map_err(|e| {
+                        e.apply::<clap_i18n_richformatter::ClapI18nRichFormatter>()
+                    })
+            }
+
+            /// Parse arguments from iterator with i18n-translated content.
+            ///
+            /// # Arguments
+            /// * `iter` - Iterator of command line arguments
+            /// * `language_tag` - Optional language tag (e.g., Some("en-US")). When None, defaults to Chinese (zh-CN).
+            ///
+            /// # Example
+            /// ```ignore
+            /// // Use English
+            /// let result = MyCmd::parse_i18n_from_with_language_tag(args, Some("en-US"));
+            /// // Use default (Chinese)
+            /// let result = MyCmd::parse_i18n_from_with_language_tag(args, None);
+            /// ```
+            pub fn parse_i18n_from_with_language_tag<I, T>(
+                iter: I,
+                language_tag: Option<&str>,
+            ) -> Result<Self, clap::error::Error<clap_i18n_richformatter::ClapI18nRichFormatter>>
+            where
+                I: IntoIterator<Item = T>,
+                T: Into<std::ffi::OsString> + Clone,
+            {
+                use clap::FromArgMatches;
+                clap_i18n_richformatter::with_clap_rich_formatter_localizer_for_language_tag(
+                    language_tag,
+                    || {
+                        Self::command_i18n()
+                            .try_get_matches_from(iter)
+                            .and_then(|mut matches| Self::from_arg_matches_mut(&mut matches))
+                            .map_err(|e| {
+                                let formatted = e.apply::<clap_i18n_richformatter::ClapI18nRichFormatter>();
+                                // Render immediately while in the language scope
+                                let rendered = formatted.render();
+                                // Store the pre-rendered message for later retrieval
+                                clap_i18n_richformatter::__private::set_prerendered_error(rendered.to_string());
+                                formatted
+                            })
+                    },
+                )
+            }
+
+            /// Get usage/help message with i18n-translated content.
+            ///
+            /// # Arguments
+            /// * `language_tag` - Optional language tag (e.g., Some("en-US")). When None, defaults to Chinese (zh-CN).
+            ///
+            /// # Example
+            /// ```ignore
+            /// // Get English help
+            /// let usage = MyCmd::get_usage_i18n_with_language_tag(Some("en-US"));
+            /// // Get default (Chinese) help
+            /// let usage = MyCmd::get_usage_i18n_with_language_tag(None);
+            /// ```
+            pub fn get_usage_i18n_with_language_tag(language_tag: Option<&str>) -> String {
+                clap_i18n_richformatter::with_clap_rich_formatter_localizer_for_language_tag(
+                    language_tag,
+                    || {
+                        Self::command_i18n().render_help().to_string()
+                    },
+                )
+            }
+
+            /// Get long help message with i18n-translated content.
+            ///
+            /// # Arguments
+            /// * `language_tag` - Optional language tag (e.g., Some("en-US")). When None, defaults to Chinese (zh-CN).
+            ///
+            /// # Example
+            /// ```ignore
+            /// // Get English long help
+            /// let usage = MyCmd::get_long_usage_i18n_with_language_tag(Some("en-US"));
+            /// // Get default (Chinese) long help
+            /// let usage = MyCmd::get_long_usage_i18n_with_language_tag(None);
+            /// ```
+            pub fn get_long_usage_i18n_with_language_tag(language_tag: Option<&str>) -> String {
+                clap_i18n_richformatter::with_clap_rich_formatter_localizer_for_language_tag(
+                    language_tag,
+                    || {
+                        Self::command_i18n().render_long_help().to_string()
+                    },
+                )
             }
         }
     };
